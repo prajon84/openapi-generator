@@ -1,0 +1,334 @@
+{{>partial_header}}
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+using System.IO;
+{{^netStandard}}
+{{^supportsUWP}}
+using System.Web;
+{{/supportsUWP}}
+{{/netStandard}}
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Runtime.Serialization;
+using System.Runtime.Serialization.Formatters;
+using System.Text;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Serialization;
+using ErrorEventArgs = Newtonsoft.Json.Serialization.ErrorEventArgs;
+
+namespace {{packageName}}.Client
+{
+{{! NOTE: Any changes related to HttpClient should be done in this class. All other client classes are for extensibility by consumers.}}
+    /// <summary>
+    /// Provides a default implementation of an Api client (both synchronous and asynchronous implementations),
+    /// encapsulating general Http Client accessor use cases.
+    /// </summary>
+    {{>visibility}} class ApiClient : IAsynchronousClient
+    {
+        private readonly String _baseUrl;
+        private readonly HttpClient _httpClient;
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="ApiClient" />, defaulting to the global configurations' base url.
+        /// </summary>
+        public ApiClient()
+        {
+            _baseUrl = string.Concat({{packageName}}.Client.GlobalConfiguration.Instance.BasePath, 
+                           {{packageName}}.Client.GlobalConfiguration.Instance.ContextPath);
+            _httpClient = SetUpHttpClient(null);
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="ApiClient" />
+        /// </summary>
+        /// <param name="basePath">The target service's base path in URL format.</param>
+        /// <exception cref="ArgumentException"></exception>
+        public ApiClient(String basePath)
+        {
+           if (String.IsNullOrEmpty(basePath))
+                throw new ArgumentException("basePath cannot be empty");
+
+            _baseUrl = string.Concat(basePath, {{packageName}}.Client.GlobalConfiguration.Instance.ContextPath);
+            _httpClient = SetUpHttpClient(null);
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="ApiClient" />
+        /// </summary>
+        /// <param name="configuration">A per-request configuration object. It is assumed that any merge with
+        /// GlobalConfiguration has been done before calling this method.</param>
+        /// <exception cref="ArgumentException"></exception>
+        public ApiClient(IReadableConfiguration configuration )
+        {
+            if (String.IsNullOrEmpty(configuration.BasePath))
+                throw new ArgumentException("basePath cannot be empty");
+
+            _baseUrl = string.Concat(configuration.BasePath, configuration.ContextPath);
+            _httpClient = SetUpHttpClient(configuration);
+        }
+
+        /// <summary>
+        /// Setups an instance of the <see cref="HttpClient" />
+        /// </summary>
+        /// <param name="configuration">A per-request configuration object. It is assumed that any merge with
+        /// GlobalConfiguration has been done before calling this method.</param>
+        /// <returns>HttpClient instance with or without MAuthAuthentication Handler</returns>
+        private HttpClient SetUpHttpClient(IReadableConfiguration configuration = null)
+        {
+            var client = configuration?.HttpClient ?? (configuration != null && 
+                            (configuration.HttpClient == null && configuration.HttpClientHandler != null)
+                             ? new HttpClient(configuration.HttpClientHandler)
+                             : new HttpClient());
+            client.DefaultRequestHeaders.Accept.Clear();
+            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            return client;
+        }
+
+        /// <summary>
+        /// Constructs the System.Net.Http version of an http method
+        /// </summary>
+        /// <param name="method">Swagger Client Custom HttpMethod</param>
+        /// <returns>System.Net.Http HttpMethod instance.</returns>
+        /// <exception cref="ArgumentOutOfRangeException"></exception>
+        private System.Net.Http.HttpMethod Method(HttpMethod method)
+        {
+            switch (method)
+            {
+                case HttpMethod.Get:
+                    return System.Net.Http.HttpMethod.Get;
+                case HttpMethod.Post:
+                    return System.Net.Http.HttpMethod.Post;
+                case HttpMethod.Put:
+                    return System.Net.Http.HttpMethod.Put;
+                case HttpMethod.Delete:
+                    return System.Net.Http.HttpMethod.Delete;
+                case HttpMethod.Head:
+                    return System.Net.Http.HttpMethod.Head;
+                case HttpMethod.Options:
+                    return System.Net.Http.HttpMethod.Options;
+                case HttpMethod.Patch:
+                    return new System.Net.Http.HttpMethod("Patch");
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(method), method, null);
+            }
+        }
+
+        /// <summary>
+        /// Provides all logic for constructing a new Http Request <see cref="HttpRequestMessage" />.
+        /// At this point, all information for querying the service is known. Here, it is simply
+        /// mapped into the Http Request.
+        /// </summary>
+        /// <param name="method">The http verb.</param>
+        /// <param name="path">The target path (or resource).</param>
+        /// <param name="options">The additional request options.</param>
+        /// <param name="configuration">A per-request configuration object. It is assumed that any merge with
+        /// GlobalConfiguration has been done before calling this method.</param>
+        /// <returns>[private] A new HttpRequestMessage instance.</returns>
+        /// <exception cref="ArgumentNullException"></exception>
+        private HttpRequestMessage NewHttpRequest(
+            HttpMethod method,
+            String path,
+            RequestOptions options,
+            IReadableConfiguration configuration)
+        {
+            if (path == null) throw new ArgumentNullException("path");
+            if (options == null) throw new ArgumentNullException("options");
+            if (configuration == null) throw new ArgumentNullException("configuration");
+
+            var request = new HttpRequestMessage(Method(method), $"{_baseUrl}{path}");
+            var content = new Dictionary<string, string>();
+
+            if (options.QueryParameters != null)
+            {
+                foreach (var queryParam in options.QueryParameters)
+                {
+                    foreach (var value in queryParam.Value)
+                    {
+                        content.Add(queryParam.Key, value);
+                    }
+                }
+            }
+
+            if (options.HeaderParameters != null)
+            {
+                foreach (var headerParam in options.HeaderParameters)
+                {
+                    foreach (var value in headerParam.Value)
+                    {
+                        content.Add(headerParam.Key, value);
+                    }
+                }
+            }
+
+            if (options.FormParameters != null)
+            {
+                foreach (var formParam in options.FormParameters)
+                {
+                    content.Add(formParam.Key, formParam.Value);
+                }
+            }
+
+            if (options.Cookies != null && options.Cookies.Count > 0)
+            {
+                foreach (var cookie in options.Cookies)
+                {
+                    content.Add(cookie.Name, cookie.Value);
+                }
+            }
+
+            var json = JsonConvert.SerializeObject(content);
+            request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+            return request;
+        }
+
+        private ApiResponse<T> ToApiResponse<T>(HttpResponseMessage response)
+        {
+            var result = response.Content.ReadAsStringAsync().Result;
+            var deserializedResult = JsonConvert.DeserializeObject<T>(result);
+            var transformed = new ApiResponse<T>(response.StatusCode, new Multimap<string, string>(), deserializedResult)
+            {
+                ErrorText = response.ReasonPhrase,
+                Cookies = new List<Cookie>()
+            };
+
+            if (response.Headers != null)
+            {
+                foreach (var responseHeader in response.Headers)
+                {
+                    transformed.Headers.Add(responseHeader.Key, ClientUtils.ParameterToString(responseHeader.Value));
+                }
+            }
+
+            Uri uri = new Uri(_baseUrl);
+            var cookieJar = new CookieContainer();
+            var responseCookies = cookieJar.GetCookies(uri);
+            foreach (Cookie respCookies in responseCookies)
+            {
+                transformed.Cookies.Add(
+                    new Cookie(
+                    respCookies.Name,
+                    respCookies.Value,
+                    respCookies.Path,
+                    respCookies.Domain)
+                    );
+            }
+
+            return transformed;
+        }
+
+        private {{#supportsAsync}}async Task<ApiResponse<T>>{{/supportsAsync}}{{^supportsAsync}}ApiResponse<T>{{/supportsAsync}} Exec<T>(HttpRequestMessage req)
+        {
+            HttpResponseMessage response = await _httpClient.SendAsync(req);
+            return ToApiResponse<T>(response);
+        }
+
+        {{#supportsAsync}}
+        #region IAsynchronousClient
+        /// <summary>
+        /// Make a HTTP GET request (async).
+        /// </summary>
+        /// <param name="path">The target path (or resource).</param>
+        /// <param name="options">The additional request options.</param>
+        /// <param name="configuration">A per-request configuration object. It is assumed that any merge with
+        /// GlobalConfiguration has been done before calling this method.</param>
+        /// <returns>A Task containing ApiResponse</returns>
+        public async Task<ApiResponse<T>> GetAsync<T>(string path, RequestOptions options, IReadableConfiguration configuration = null)
+        {
+            var config = configuration ?? GlobalConfiguration.Instance;
+            return await Exec<T>(NewHttpRequest(HttpMethod.Get, path, options, config));
+        }
+
+        /// <summary>
+        /// Make a HTTP POST request (async).
+        /// </summary>
+        /// <param name="path">The target path (or resource).</param>
+        /// <param name="options">The additional request options.</param>
+        /// <param name="configuration">A per-request configuration object. It is assumed that any merge with
+        /// GlobalConfiguration has been done before calling this method.</param>
+        /// <returns>A Task containing ApiResponse</returns>
+        public async Task<ApiResponse<T>> PostAsync<T>(string path, RequestOptions options, IReadableConfiguration configuration = null)
+        {
+            var config = configuration ?? GlobalConfiguration.Instance;
+            return await Exec<T>(NewHttpRequest(HttpMethod.Post, path, options, config));
+        }
+
+        /// <summary>
+        /// Make a HTTP PUT request (async).
+        /// </summary>
+        /// <param name="path">The target path (or resource).</param>
+        /// <param name="options">The additional request options.</param>
+        /// <param name="configuration">A per-request configuration object. It is assumed that any merge with
+        /// GlobalConfiguration has been done before calling this method.</param>
+        /// <returns>A Task containing ApiResponse</returns>
+        public async Task<ApiResponse<T>> PutAsync<T>(string path, RequestOptions options, IReadableConfiguration configuration = null)
+        {
+            var config = configuration ?? GlobalConfiguration.Instance;
+            return await Exec<T>(NewHttpRequest(HttpMethod.Put, path, options, config));
+        }
+
+        /// <summary>
+        /// Make a HTTP DELETE request (async).
+        /// </summary>
+        /// <param name="path">The target path (or resource).</param>
+        /// <param name="options">The additional request options.</param>
+        /// <param name="configuration">A per-request configuration object. It is assumed that any merge with
+        /// GlobalConfiguration has been done before calling this method.</param>
+        /// <returns>A Task containing ApiResponse</returns>
+        public async Task<ApiResponse<T>> DeleteAsync<T>(string path, RequestOptions options, IReadableConfiguration configuration = null)
+        {
+            var config = configuration ?? GlobalConfiguration.Instance;
+            return await Exec<T>(NewHttpRequest(HttpMethod.Delete, path, options, config));
+        }
+
+        /// <summary>
+        /// Make a HTTP HEAD request (async).
+        /// </summary>
+        /// <param name="path">The target path (or resource).</param>
+        /// <param name="options">The additional request options.</param>
+        /// <param name="configuration">A per-request configuration object. It is assumed that any merge with
+        /// GlobalConfiguration has been done before calling this method.</param>
+        /// <returns>A Task containing ApiResponse</returns>
+        public async Task<ApiResponse<T>> HeadAsync<T>(string path, RequestOptions options, IReadableConfiguration configuration = null)
+        {
+            var config = configuration ?? GlobalConfiguration.Instance;
+            return await Exec<T>(NewHttpRequest(HttpMethod.Head, path, options, config));
+        }
+
+        /// <summary>
+        /// Make a HTTP OPTION request (async).
+        /// </summary>
+        /// <param name="path">The target path (or resource).</param>
+        /// <param name="options">The additional request options.</param>
+        /// <param name="configuration">A per-request configuration object. It is assumed that any merge with
+        /// GlobalConfiguration has been done before calling this method.</param>
+        /// <returns>A Task containing ApiResponse</returns>
+        public async Task<ApiResponse<T>> OptionsAsync<T>(string path, RequestOptions options, IReadableConfiguration configuration = null)
+        {
+            var config = configuration ?? GlobalConfiguration.Instance;
+            return await Exec<T>(NewHttpRequest(HttpMethod.Options, path, options, config));
+        }
+
+        /// <summary>
+        /// Make a HTTP Patch request (async).
+        /// </summary>
+        /// <param name="path">The target path (or resource).</param>
+        /// <param name="options">The additional request options.</param>
+        /// <param name="configuration">A per-request configuration object. It is assumed that any merge with
+        /// GlobalConfiguration has been done before calling this method.</param>
+        /// <returns>A Task containing ApiResponse</returns>
+        public async Task<ApiResponse<T>> PatchAsync<T>(string path, RequestOptions options, IReadableConfiguration configuration = null)
+        {
+            var config = configuration ?? GlobalConfiguration.Instance;
+            return await Exec<T>(NewHttpRequest(HttpMethod.Patch, path, options, config));
+        }
+        #endregion IAsynchronousClient
+        {{/supportsAsync}}
+    }
+}
